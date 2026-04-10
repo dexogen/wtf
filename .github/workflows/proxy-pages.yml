@@ -1,0 +1,110 @@
+name: Publish Telegram Proxy Config
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Fetch proxy files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          curl --fail --show-error --silent --location --retry 5 --retry-delay 2 \
+            "https://core.telegram.org/getProxySecret" \
+            -o dist/getProxySecret
+          curl --fail --show-error --silent --location --retry 5 --retry-delay 2 \
+            "https://core.telegram.org/getProxyConfig" \
+            -o dist/getProxyConfig
+          curl --fail --show-error --silent --location --retry 5 --retry-delay 2 \
+            "https://core.telegram.org/getProxyConfigV6" \
+            -o dist/getProxyConfigV6
+
+          secret_size=$(wc -c < dist/getProxySecret)
+          config_v4_size=$(wc -c < dist/getProxyConfig)
+          config_v6_size=$(wc -c < dist/getProxyConfigV6)
+          if [ "$secret_size" -lt 64 ] || [ "$config_v4_size" -lt 100 ] || [ "$config_v6_size" -lt 100 ]; then
+            echo "Fetched files look too small: secret=$secret_size v4=$config_v4_size v6=$config_v6_size"
+            exit 1
+          fi
+
+          fetched_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          sha256sum dist/getProxySecret dist/getProxyConfig dist/getProxyConfigV6 > dist/SHA256SUMS
+          {
+            echo "{"
+            echo "  \"fetched_at\": \"${fetched_at}\","
+            echo "  \"files\": ["
+            echo "    \"getProxySecret\","
+            echo "    \"getProxyConfig\","
+            echo "    \"getProxyConfigV6\""
+            echo "  ]"
+            echo "}"
+          } > dist/meta.json
+
+      - name: Build index page
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dist/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>Telegram MTProxy Config Mirror</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; line-height: 1.5; }
+              h1 { margin-bottom: 0.25rem; }
+              ul { padding-left: 1.2rem; }
+              code { background: #f4f4f4; padding: 0.15rem 0.35rem; border-radius: 4px; }
+            </style>
+          </head>
+          <body>
+            <h1>Telegram MTProxy Config Mirror</h1>
+            <p>Auto-updated by GitHub Actions schedule.</p>
+            <ul>
+              <li><a href="./getProxySecret">getProxySecret</a></li>
+              <li><a href="./getProxyConfig">getProxyConfig</a></li>
+              <li><a href="./getProxyConfigV6">getProxyConfigV6</a></li>
+              <li><a href="./SHA256SUMS">SHA256SUMS</a></li>
+              <li><a href="./meta.json">meta.json</a></li>
+            </ul>
+          </body>
+          </html>
+          HTML
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
